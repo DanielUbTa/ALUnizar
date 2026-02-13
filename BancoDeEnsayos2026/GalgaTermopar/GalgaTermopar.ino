@@ -9,9 +9,6 @@
 
 //Pines SPI comunes
 
-//SCK = GPIO 14
-//MISO = GPIO 12
-//MOSI = GPIO 13
 
 
 ///////////////Globales para guardado de datos
@@ -37,12 +34,12 @@
   #define VFSR         VREF/PGA
   #define FULL_SCALE   (((long int)1<<23)-1)
 
-  const float mult = 0.012 * 300.0/((float)FULL_SCALE);   //Esto es lo que habrá que sacar experimentalmente
+  const float mult = 0.012 * 1e6/((float)FULL_SCALE);   //Esto es lo que habrá que sacar experimentalmente
   const float offset = 0.0;
 
   float ultimaFuerza = 0.0;
 
-  #define ADC_CS   7
+  #define ADC_CS   10
   #define ADC_DRDY 2
   Protocentral_ADS1220 ads1220;
   volatile bool ADCdataReady = false;
@@ -157,17 +154,24 @@
 ///////////////
 
 
-
+//SCK = GPIO 12
+//MISO = GPIO 13
+//MOSI = GPIO 11
+//CS = GPIO 10
 
 void setup() {
   
   Serial.begin(115200);
+  delay(1);
+  Serial.println("Serial encendido");
 
-  SPI.begin();
+  SPI.begin(12,13,11,10);
+
+  Serial.println("SPI encendido");
 
   setupADC();
   setupRTD();
-  e220ttl.begin();
+  //e220ttl.begin();
 }
 
 void loop() {
@@ -178,21 +182,21 @@ void loop() {
 
     #if sacarMedidasPorSerial
       Serial.print("Variable_1: ");
-      Serial.println(ultimaFuerza);
+      Serial.println(ultimaFuerza,8);
     #endif
 
     divisorRateTemp++;
 
-    if(divisorRateTemp >= divisionRateTemperatura){
-      divisorRateTemp = 0;
-      guardarTemperatura();
-      #if sacarMedidasPorSerial
-        Serial.print("Variable_2: ");
-        Serial.println(ultimaTemp);
-      #endif
-    }
+    // if(divisorRateTemp >= divisionRateTemperatura){
+    //   divisorRateTemp = 0;
+    //   guardarTemperatura();
+    //   #if sacarMedidasPorSerial
+    //     Serial.print("Variable_2: ");
+    //     Serial.println(ultimaTemp);
+    //   #endif
+    // }
   }
 
-  delayMicroseconds(100);
-
+  //delayMicroseconds(100);
+  delay(1000);
 }
