@@ -34,8 +34,8 @@
   #define VFSR         VREF/PGA
   #define FULL_SCALE   (((long int)1<<23)-1)
 
-  const float mult = 0.012 * 1e6/((float)FULL_SCALE);   //Esto es lo que habrá que sacar experimentalmente
-  const float offset = 0.0;
+  const float mult = 1; //0.012 * 1e3/((float)FULL_SCALE);   //Esto es lo que habrá que sacar experimentalmente
+  const float suma = 0.0;
 
   float ultimaFuerza = 0.0;
 
@@ -68,7 +68,7 @@
 
   void guardarFuerza(){
     ads1220.Read_Data();
-    ultimaFuerza = ((float)ads1220.DataToInt()) * mult + offset;
+    ultimaFuerza = ((float)ads1220.DataToInt()) * mult + suma;
     arrayFuerzas[arrayFuerzasPuntero] = ultimaFuerza;
     arrayFuerzasPuntero++;
     if(arrayFuerzasPuntero >= tamanoArrayFuerzas){
