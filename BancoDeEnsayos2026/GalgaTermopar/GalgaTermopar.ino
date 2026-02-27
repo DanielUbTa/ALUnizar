@@ -5,6 +5,13 @@
 #include "LoRa_E220.h"
 
 
+int contadorPruebas = 0;
+
+int contadorPruebas2 = 0;
+
+
+
+
 #define sacarMedidasPorSerial true
 
 //Pines SPI comunes
@@ -12,8 +19,9 @@
 
 
 ///////////////Globales para guardado de datos
-  #define tamanoArrayFuerzas 16384
+  #define tamanoArrayFuerzas 1000
     //Equivalente a 16 segundos de guardado de datos
+    //Voy a poner menos tamaño porque hay que hacer un filtro
   float arrayFuerzas[tamanoArrayFuerzas];
   uint32_t arrayFuerzasPuntero = 0;
 
@@ -34,11 +42,11 @@
   #define VFSR         VREF/PGA
   #define FULL_SCALE   (((long int)1<<23)-1)
 
-  const float mult = 1; //0.012 * 1e3/((float)FULL_SCALE);   //Esto es lo que habrá que sacar experimentalmente
+  const float mult = 0.000000975797*0.375;   //Esto es lo que habrá que sacar experimentalmente
   const float suma = 0.0;
 
   float ultimaFuerza = 0.0;
-
+  
   #define ADC_CS   10
   #define ADC_DRDY 2
   Protocentral_ADS1220 ads1220;
@@ -68,7 +76,8 @@
 
   void guardarFuerza(){
     ads1220.Read_Data();
-    ultimaFuerza = ((float)ads1220.DataToInt()) * mult + suma;
+    float fuerzaMedida = ((float)ads1220.DataToInt()) * mult + suma;
+    ultimaFuerza += 1*(fuerzaMedida-ultimaFuerza); //"Filtro"
     arrayFuerzas[arrayFuerzasPuntero] = ultimaFuerza;
     arrayFuerzasPuntero++;
     if(arrayFuerzasPuntero >= tamanoArrayFuerzas){
@@ -172,6 +181,8 @@ void setup() {
   setupADC();
   setupRTD();
   //e220ttl.begin();
+
+  contadorPruebas2 = millis();
 }
 
 void loop() {
@@ -181,8 +192,17 @@ void loop() {
     guardarFuerza();
 
     #if sacarMedidasPorSerial
-      Serial.print("Variable_1: ");
-      Serial.println(ultimaFuerza,8);
+      contadorPruebas++;
+      contadorPruebas2++;
+      if(contadorPruebas == 10){
+        Serial.print("Variable_1:");
+        //Serial.println(filtroFuerzas(arrayFuerzas),4);
+        //Serial.println(ultimaFuerza,8);
+        Serial.print("Variable_2:");
+        Serial.println(0);
+        //Serial.println((float)contadorPruebas2/(float)millis(),8);
+        contadorPruebas = 0;
+      }
     #endif
 
     divisorRateTemp++;
@@ -198,5 +218,17 @@ void loop() {
   }
 
   //delayMicroseconds(100);
-  delay(1000);
+  //delayMicroseconds(1);
+}
+
+
+float filtroFuerzas(float arrayFuerzas[]){
+  float fuerza_media = 0;
+  
+  for (int i=0; i<1000; i++){
+    fuerza_media += arrayFuerzas[i];
+  }
+  fuerza_media = fuerza_media/1000;
+  if (fuerza_media == 0.1) return 0.0;
+  else return fuerza_media;
 }
