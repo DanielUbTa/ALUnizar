@@ -9,14 +9,14 @@ int contadorPruebas = 0;
 
 int contadorPruebas2 = 0;
 
-
-
-
 #define sacarMedidasPorSerial true
 
 //Pines SPI comunes
 
-
+#define SCK 12
+#define MISO 13
+#define MOSI 11
+#define CS_Galga 10 //Es activo en bajo
 
 ///////////////Globales para guardado de datos
   #define tamanoArrayFuerzas 1000
@@ -48,7 +48,7 @@ int contadorPruebas2 = 0;
   float ultimaFuerza = 0.0;
   
   #define ADC_CS   10
-  #define ADC_DRDY 2
+  #define ADC_DRDY 1
   Protocentral_ADS1220 ads1220;
   volatile bool ADCdataReady = false;
 
@@ -75,6 +75,7 @@ int contadorPruebas2 = 0;
   }
 
   void guardarFuerza(){
+    //Serial.println("En guardar fuerza");
     ads1220.Read_Data();
     float fuerzaMedida = ((float)ads1220.DataToInt()) * mult + suma;
     ultimaFuerza += 1*(fuerzaMedida-ultimaFuerza); //"Filtro"
@@ -88,13 +89,13 @@ int contadorPruebas2 = 0;
 ///////////////
 
 ///////////////Cosas del termopar
-  #define RTD_CS_PIN   10
+  #define RTD_CS_PIN   35
   #define RREF_OHM     430.0f
   #define R0_OHM       100.0f  //Igual hay que cambiar
 
   float ultimaTemp = 0.0;
 
-  MAX31865_7Semi rtd(RTD_CS_PIN, SPI);
+  MAX31865_7Semi rtd(RTD_CS_PIN,SPI);
 
   void printFaultsAndClear() {
     Serial.println(F("MAX31865: FAULT detected!"));
@@ -109,7 +110,7 @@ int contadorPruebas2 = 0;
   }
 
   void setupRTD() {
-    rtd.begin(WIRES_2,      //puede ser WIRES_2 o WIRES_3 en funcion de la sonda
+    rtd.begin(WIRES_3,      //puede ser WIRES_2 o WIRES_3 en funcion de la sonda
               FILTER_50HZ,  // o FILTER_60HZ
               true,         // autoConvert
               true,         // Vbias ON
@@ -118,8 +119,8 @@ int contadorPruebas2 = 0;
     rtd.setReferenceResistor(RREF_OHM);
     rtd.setR0(R0_OHM);
 
-    rtd.setLowThreshold(20.0f);
-    rtd.setHighThreshold(40.0f);
+    rtd.setLowThreshold(0.0f);
+    rtd.setHighThreshold(1000.0f);
     rtd.clearFaults();
   }
 
@@ -166,22 +167,22 @@ int contadorPruebas2 = 0;
 //SCK = GPIO 12
 //MISO = GPIO 13
 //MOSI = GPIO 11
-//CS = GPIO 10
+//CS_galga = GPIO 10
+//CS_RTD = GPIO 35
 
 void setup() {
   
   Serial.begin(115200);
   delay(1);
-  Serial.println("Serial encendido");
+  //Serial.println("Serial encendido");
+  SPI.begin(12,13,11);
 
-  SPI.begin(12,13,11,10);
-
-  Serial.println("SPI encendido");
+  //Serial.println("SPI encendido");
 
   setupADC();
   setupRTD();
   //e220ttl.begin();
-
+  //Serial.println("Setup Completado");
   contadorPruebas2 = millis();
 }
 
@@ -189,35 +190,46 @@ void loop() {
 
   if (ADCdataReady) {
     ADCdataReady = false;
+    //Serial.println("ADC Data Ready");
     guardarFuerza();
-
+    //Serial.println("Fuerza guardada");
     #if sacarMedidasPorSerial
       contadorPruebas++;
-      contadorPruebas2++;
+      //contadorPruebas2++;
       if(contadorPruebas == 10){
         Serial.print("Variable_1:");
-        //Serial.println(filtroFuerzas(arrayFuerzas),4);
+        Serial.println(filtroFuerzas(arrayFuerzas),4);
         //Serial.println(ultimaFuerza,8);
-        Serial.print("Variable_2:");
-        Serial.println(0);
+        //Serial.print("Variable_2:");
         //Serial.println((float)contadorPruebas2/(float)millis(),8);
-        contadorPruebas = 0;
+        //contadorPruebas = 0;
       }
-    #endif
-
+      #endif
+      Serial.print("Variable_1:");
+      Serial.println(filtroFuerzas(arrayFuerzas),4);
     divisorRateTemp++;
 
-    // if(divisorRateTemp >= divisionRateTemperatura){
-    //   divisorRateTemp = 0;
-    //   guardarTemperatura();
-    //   #if sacarMedidasPorSerial
-    //     Serial.print("Variable_2: ");
-    //     Serial.println(ultimaTemp);
-    //   #endif
-    // }
+    /*
+    if(divisorRateTemp >= divisionRateTemperatura){
+      divisorRateTemp = 0;
+      //Serial.println("Temperatura medida");
+      guardarTemperatura();
+      
+      #if sacarMedidasPorSerial
+        Serial.print("Variable_2:");
+        Serial.println(ultimaTemp);
+      #endif
+    }
+    */
+    guardarTemperatura();
+    
+    #if sacarMedidasPorSerial
+      Serial.print("Variable_2:");
+      Serial.println(filtroTemperatura(arrayTemp));
+    #endif
   }
 
-  //delayMicroseconds(100);
+  delayMicroseconds(100);
   //delayMicroseconds(1);
 }
 
@@ -231,4 +243,13 @@ float filtroFuerzas(float arrayFuerzas[]){
   fuerza_media = fuerza_media/1000;
   if (fuerza_media == 0.1) return 0.0;
   else return fuerza_media;
+}
+float filtroTemperatura(float arrayTemp[]){
+  float temp_media = 0;
+  
+  for (int i=0; i<256; i++){
+    temp_media += arrayTemp[i];
+  }
+  temp_media = temp_media/256;
+  return temp_media;
 }
