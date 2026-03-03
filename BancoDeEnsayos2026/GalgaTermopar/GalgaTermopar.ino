@@ -19,9 +19,9 @@ int contadorPruebas2 = 0;
 #define CS_Galga 10 //Es activo en bajo
 
 ///////////////Globales para guardado de datos
-  #define tamanoArrayFuerzas 1000
+  #define tamanoArrayFuerzas 1000 //16384
     //Equivalente a 16 segundos de guardado de datos
-    //Voy a poner menos tamaño porque hay que hacer un filtro
+    //Voy a poner menos tamaño para hacer un filtro
   float arrayFuerzas[tamanoArrayFuerzas];
   uint32_t arrayFuerzasPuntero = 0;
 
@@ -42,7 +42,8 @@ int contadorPruebas2 = 0;
   #define VFSR         VREF/PGA
   #define FULL_SCALE   (((long int)1<<23)-1)
 
-  const float mult = 0.000000975797*0.375;   //Esto es lo que habrá que sacar experimentalmente
+  const float mult = 0.00001788139;//300kg/(2^24-1 FS)
+  
   const float suma = 0.0;
 
   float ultimaFuerza = 0.0;
@@ -75,12 +76,14 @@ int contadorPruebas2 = 0;
   }
 
   void guardarFuerza(){
-    //Serial.println("En guardar fuerza");
+    
     ads1220.Read_Data();
-    float fuerzaMedida = ((float)ads1220.DataToInt()) * mult + suma;
-    ultimaFuerza += 1*(fuerzaMedida-ultimaFuerza); //"Filtro"
+    //float fuerzaMedida = ((float)ads1220.DataToInt()) * mult + suma;
+    //ultimaFuerza += 1*(fuerzaMedida-ultimaFuerza); //"Filtro"
+    ultimaFuerza = ((float)ads1220.DataToInt()) * mult + suma; //Lo pongo así porque hay un filtro ya hecho en una rutina
     arrayFuerzas[arrayFuerzasPuntero] = ultimaFuerza;
     arrayFuerzasPuntero++;
+
     if(arrayFuerzasPuntero >= tamanoArrayFuerzas){
       arrayFuerzasPuntero = 0;
     }
@@ -95,13 +98,13 @@ int contadorPruebas2 = 0;
 
   float ultimaTemp = 0.0;
 
-  MAX31865_7Semi rtd(RTD_CS_PIN,SPI);
+  MAX31865_7Semi rtd(RTD_CS_PIN, SPI);
 
   void printFaultsAndClear() {
     Serial.println(F("MAX31865: FAULT detected!"));
     MAX31865_7Semi::FaultStatus f = rtd.readFaultStatus();
-    if (f.rtdHigh)       Serial.println(F("  - RTD HIGH threshold"));
-    if (f.rtdLow)        Serial.println(F("  - RTD LOW threshold"));
+    if (f.rtdHigh)       Serial.println(F("  - RTD en circuito abierto")); //RTD HIGH threshold
+    if (f.rtdLow)        Serial.println(F("  - RTD en cortocircuito")); //RTD LOW threshold
     if (f.refInHigh)     Serial.println(F("  - REFIN- > 0.85*Vbias"));
     if (f.refInLow)      Serial.println(F("  - REFIN- < 0.85*Vbias"));
     if (f.rtdInLow)      Serial.println(F("  - RTDIN- < 0.85*Vbias"));
@@ -110,7 +113,7 @@ int contadorPruebas2 = 0;
   }
 
   void setupRTD() {
-    rtd.begin(WIRES_3,      //puede ser WIRES_2 o WIRES_3 en funcion de la sonda
+    rtd.begin(WIRES_3,      //puede ser WIRES_2 o WIRES_3 en función de la sonda
               FILTER_50HZ,  // o FILTER_60HZ
               true,         // autoConvert
               true,         // Vbias ON
@@ -119,15 +122,15 @@ int contadorPruebas2 = 0;
     rtd.setReferenceResistor(RREF_OHM);
     rtd.setR0(R0_OHM);
 
-    rtd.setLowThreshold(0.0f);
-    rtd.setHighThreshold(1000.0f);
+    rtd.setLowThreshold(20.0f);
+    rtd.setHighThreshold(40.0f);
     rtd.clearFaults();
   }
 
   float leerTemperaturaC() {
     if (rtd.readFault()) {
       printFaultsAndClear();
-      return -273.15;//Ha habido un fallo
+      return -273.15; //Ha habido un fallo
     }
     return rtd.readTemperatureC();
   }
@@ -149,7 +152,7 @@ int contadorPruebas2 = 0;
   //LoRa_E220 e220ttl(&Serial2, 22, 4, 18, 21, 19, UART_BPS_RATE_9600); //  esp32 RX <-- e220 TX, esp32 TX --> e220 RX AUX M0 M1
 
   //Para mandar mensajes habrá que usar sendCharArray
-    //ResponseStatus rs = sendCharArray(payload, sizeof(payload));
+  //ResponseStatus rs = sendCharArray(payload, sizeof(payload));
 ///////////////
 
 ///////////////Máquina de estados
@@ -167,7 +170,7 @@ int contadorPruebas2 = 0;
 //SCK = GPIO 12
 //MISO = GPIO 13
 //MOSI = GPIO 11
-//CS_galga = GPIO 10
+//CS_Galga = GPIO 10
 //CS_RTD = GPIO 35
 
 void setup() {
@@ -175,7 +178,7 @@ void setup() {
   Serial.begin(115200);
   delay(1);
   //Serial.println("Serial encendido");
-  SPI.begin(12,13,11);
+  SPI.begin(SCK, MISO, MOSI);
 
   //Serial.println("SPI encendido");
 
@@ -190,43 +193,37 @@ void loop() {
 
   if (ADCdataReady) {
     ADCdataReady = false;
-    //Serial.println("ADC Data Ready");
     guardarFuerza();
-    //Serial.println("Fuerza guardada");
+
+    
     #if sacarMedidasPorSerial
       contadorPruebas++;
       //contadorPruebas2++;
       if(contadorPruebas == 10){
-        Serial.print("Variable_1:");
+        Serial.print("Fuerza(Kg):");
         Serial.println(filtroFuerzas(arrayFuerzas),4);
         //Serial.println(ultimaFuerza,8);
         //Serial.print("Variable_2:");
         //Serial.println((float)contadorPruebas2/(float)millis(),8);
-        //contadorPruebas = 0;
+        contadorPruebas = 0;
       }
-      #endif
-      Serial.print("Variable_1:");
-      Serial.println(filtroFuerzas(arrayFuerzas),4);
-    divisorRateTemp++;
+    #endif 
 
-    /*
+    //Serial.print("Variable_1:");
+    //Serial.println(filtroFuerzas(arrayFuerzas),4);
+    divisorRateTemp++;
+   
     if(divisorRateTemp >= divisionRateTemperatura){
       divisorRateTemp = 0;
       //Serial.println("Temperatura medida");
       guardarTemperatura();
       
       #if sacarMedidasPorSerial
-        Serial.print("Variable_2:");
-        Serial.println(ultimaTemp);
+        Serial.print("Temperatura:");
+        Serial.println(filtroTemperatura(arrayTemp));
       #endif
     }
-    */
-    guardarTemperatura();
-    
-    #if sacarMedidasPorSerial
-      Serial.print("Variable_2:");
-      Serial.println(filtroTemperatura(arrayTemp));
-    #endif
+
   }
 
   delayMicroseconds(100);
@@ -240,16 +237,16 @@ float filtroFuerzas(float arrayFuerzas[]){
   for (int i=0; i<1000; i++){
     fuerza_media += arrayFuerzas[i];
   }
-  fuerza_media = fuerza_media/1000;
-  if (fuerza_media == 0.1) return 0.0;
-  else return fuerza_media;
+  return fuerza_media/1000;
+  
 }
+
 float filtroTemperatura(float arrayTemp[]){
   float temp_media = 0;
   
   for (int i=0; i<256; i++){
     temp_media += arrayTemp[i];
   }
-  temp_media = temp_media/256;
-  return temp_media;
+  return temp_media/256;
+  
 }
