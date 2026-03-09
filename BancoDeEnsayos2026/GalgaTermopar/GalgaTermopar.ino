@@ -123,7 +123,7 @@ int contadorPruebas2 = 0;
     rtd.setR0(R0_OHM);
 
     rtd.setLowThreshold(20.0f);
-    rtd.setHighThreshold(40.0f);
+    rtd.setHighThreshold(300.0f);
     rtd.clearFaults();
   }
 
