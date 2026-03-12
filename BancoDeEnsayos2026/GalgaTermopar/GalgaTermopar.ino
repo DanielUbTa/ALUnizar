@@ -40,9 +40,9 @@ int contadorPruebas2 = 0;
   #define PGA          1                 // Programmable Gain = 1
   #define VREF         2.048            // Internal reference of 2.048V
   #define VFSR         VREF/PGA
-  #define FULL_SCALE   (((long int)1<<23)-1)
+  #define FULL_SCALE   (((long int)1<<24)-1)
 
-  const float mult = 0.00001788139;//300kg/(2^24-1 FS)
+  const float mult = 300/(FULL_SCALE-1);//300kg/(2^24-1 FS) Multiplicar por 9.81 para sacar los newtons
   
   const float suma = 0.0;
 
@@ -226,7 +226,7 @@ void loop() {
 
   }
 
-  delayMicroseconds(100);
+  delayMicroseconds(100);//Delay de 100uS
   //delayMicroseconds(1);
 }
 
