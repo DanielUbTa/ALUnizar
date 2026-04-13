@@ -4,182 +4,197 @@
 #include <7Semi_MAX31865.h>
 #include "LoRa_E220.h"
 
-int contadorPruebas = 0;
-#define mandarMedidasPorLoRa true
+#define ENVIAR_POR_LORA 1
 
-// Pines SPI comunes
-#define SCK 12
-#define MISO 13
-#define MOSI 11
-#define CS_Galga 10 // Es activo en bajo
+// ===================== PINES DEFINITIVOS =====================
+// Pines SPI
+#define SCK   46
+#define MISO  11 // ¡Actualizado al 11!
+#define MOSI  45
 
-/////////////// Globales para guardado de datos
-#define tamanoArrayFuerzas 1000 
-float arrayFuerzas[tamanoArrayFuerzas];
-uint32_t arrayFuerzasPuntero = 0;
+// Pines LoRa
+#define LORA_RX_PIN 42 // Conectar al TX del LoRa
+#define LORA_TX_PIN 2  // Conectar al RX del LoRa
+#define LORA_AUX_PIN 34 
+// (El pin 37 del LoRa no hace falta declararlo aquí si es M0/M1, el módulo funciona igual)
 
-// Configuración de frecuencia de envío por LoRa
-// LoRa es más lento que el cable. 
-// 200 lecturas = aprox 5 Hz para Fuerza
-// 1000 lecturas = aprox 1 Hz para Temperatura
-#define lecturasParaFuerza 200       
-#define lecturasParaTemp 1000        
-int divisorRateTemp = 0;
+// ADS1220 (Fuerza)
+#define ADC_CS    14 
+#define ADC_DRDY  4  // DRDY movido al 4 para evitar conflicto con el RTD
 
-#define tamanoArrayTemp 256
-float arrayTemp[tamanoArrayTemp];
-uint32_t arrayTempPuntero = 0;
+// RTD MAX31865 (Temperatura)
+#define RTD_CS_PIN 35 
+#define RREF_OHM   430.0f
+#define R0_OHM     100.0f
+// ==============================================================
 
-/////////////// Cosas del ADC
-#define PGA          1                 
-#define VREF         2.048            
-#define VFSR         VREF/PGA
-#define FULL_SCALE   (((long int)1<<23)-1)
+// Configuración de envío
+#define LECTURAS_PARA_ENVIO_FUERZA 200   
+#define LECTURAS_PARA_TEMP         1000  
 
-const float mult = 0.00001788139;
-const float suma = 0.0;
-float ultimaFuerza = 0.0;
+// Variables ADC fuerza 
+#define PGA        1
+#define VREF       2.048
+#define VFSR       VREF / PGA
+#define FULL_SCALE (((long int)1 << 23) - 1)
 
-#define ADC_CS   10
-#define ADC_DRDY 1
+const float mult = 300.0f/FULL_SCALE;
+const float suma = 0.0f;
+
 Protocentral_ADS1220 ads1220;
 volatile bool ADCdataReady = false;
 
+float sumaFuerzas = 0.0f;
+uint32_t contadorFuerzas = 0;
+float ultimaFuerza = 0.0f;
+
+// Variables RTD
+MAX31865_7Semi rtd(RTD_CS_PIN, SPI);
+float ultimaTemp = NAN;
+
+// LoRa
+LoRa_E220 e220ttl(&Serial2, LORA_AUX_PIN);
+
+// Control
+uint32_t divisorRateTemp = 0;
+uint32_t numeroPaquete = 0;
+
+// -------------------------------------------------------
 void IRAM_ATTR drdyISR() {
   ADCdataReady = true;
 }
 
-void setupADC(){
+// -------------------------------------------------------
+void setupADC() {
   pinMode(ADC_DRDY, INPUT);
   ads1220.begin(ADC_CS, ADC_DRDY);
-  ads1220.set_pga_gain(PGA_GAIN_1); 
+  ads1220.set_pga_gain(PGA_GAIN_1);
   ads1220.set_data_rate(DR_1000SPS);
   ads1220.set_conv_mode_continuous();
   ads1220.Start_Conv();
+
   attachInterrupt(digitalPinToInterrupt(ADC_DRDY), drdyISR, FALLING);
 }
 
-void guardarFuerza(){
-  ads1220.Read_Data();
-  ultimaFuerza = ((float)ads1220.DataToInt()) * mult + suma; 
-  arrayFuerzas[arrayFuerzasPuntero] = ultimaFuerza;
-  arrayFuerzasPuntero++;
-  if(arrayFuerzasPuntero >= tamanoArrayFuerzas){
-    arrayFuerzasPuntero = 0;
-  }
-}
-
-/////////////// Cosas del termopar
-#define RTD_CS_PIN   35
-#define RREF_OHM     430.0f
-#define R0_OHM       100.0f  
-
-float ultimaTemp = 0.0;
-MAX31865_7Semi rtd(RTD_CS_PIN, SPI);
-
-// Inicializamos objeto LoRa (TX2=17, RX2=16 normalmente se usan internamente en Serial2)
-LoRa_E220 e220ttl(&Serial2, 36);
-
-void printFaultsAndClear() {
-  // Juntamos los errores en un solo string para no colapsar la red LoRa
-  String errorMsg = "MAX31865: FAULT detectado! ";
-  MAX31865_7Semi::FaultStatus f = rtd.readFaultStatus();
-  if (f.rtdHigh)       errorMsg += "[RTD abierto] ";
-  if (f.rtdLow)        errorMsg += "[RTD en corto] ";
-  if (f.refInHigh)     errorMsg += "[REFIN- Alto] ";
-  if (f.refInLow)      errorMsg += "[REFIN- Bajo] ";
-  if (f.rtdInLow)      errorMsg += "[RTDIN- Bajo] ";
-  if (f.overUnderVolt) errorMsg += "[Over/Under Volt] ";
-  
-  e220ttl.sendMessage(errorMsg);
-  rtd.clearFaults();
-}
-
+// -------------------------------------------------------
 void setupRTD() {
   rtd.begin(WIRES_3, FILTER_50HZ, true, true, 1000000);
   rtd.setReferenceResistor(RREF_OHM);
   rtd.setR0(R0_OHM);
-  rtd.setLowThreshold(20.0f);
-  rtd.setHighThreshold(40.0f);
   rtd.clearFaults();
 }
 
+// -------------------------------------------------------
+void printFaultsAndClear() {
+  String errorMsg = "ERROR_RTD:";
+  MAX31865_7Semi::FaultStatus f = rtd.readFaultStatus();
+
+  if (f.rtdHigh)       errorMsg += "[RTD_ABIERTO]";
+  if (f.rtdLow)        errorMsg += "[RTD_CORTO]";
+  if (f.refInHigh)     errorMsg += "[REFIN_ALTO]";
+  if (f.refInLow)      errorMsg += "[REFIN_BAJO]";
+  if (f.rtdInLow)      errorMsg += "[RTDIN_BAJO]";
+  if (f.overUnderVolt) errorMsg += "[OV_UV]";
+
+#if ENVIAR_POR_LORA
+  ResponseStatus rs = e220ttl.sendMessage(errorMsg);
+  Serial.print("Envio error RTD: ");
+  Serial.println(rs.getResponseDescription());
+#endif
+
+  rtd.clearFaults();
+}
+
+// -------------------------------------------------------
 float leerTemperaturaC() {
   if (rtd.readFault()) {
     printFaultsAndClear();
-    return -273.15; 
+    return NAN;
   }
   return rtd.readTemperatureC();
 }
 
-void guardarTemperatura(){
-  ultimaTemp = leerTemperaturaC();
-  arrayTemp[arrayTempPuntero] = ultimaTemp;
-  arrayTempPuntero++;
-  if(arrayTempPuntero >= tamanoArrayTemp){
-    arrayTempPuntero = 0;
-  }
+// -------------------------------------------------------
+void leerYAcumularFuerza() {
+  ads1220.Read_Data();
+  ultimaFuerza = ((float)ads1220.DataToInt()) * mult + suma;
+  sumaFuerzas += ultimaFuerza;
+  contadorFuerzas++;
 }
 
-/////////////// Declaración previa de funciones
-float filtroFuerzas(float arr[]);
-float filtroTemperatura(float arr[]);
+// -------------------------------------------------------
+void actualizarTemperatura() {
+  ultimaTemp = leerTemperaturaC();
+}
 
+// -------------------------------------------------------
+void enviarPaquete(float fuerzaMedia, float temperatura) {
+  char msg[96];
+
+  if (isnan(temperatura)) {
+    snprintf(msg, sizeof(msg), "%lu,%.4f,NAN", (unsigned long)numeroPaquete, fuerzaMedia);
+  } else {
+    snprintf(msg, sizeof(msg), "%lu,%.4f,%.2f", (unsigned long)numeroPaquete, fuerzaMedia, temperatura);
+  }
+
+#if ENVIAR_POR_LORA
+  ResponseStatus rs = e220ttl.sendMessage(msg);
+
+  Serial.print("TX -> ");
+  Serial.println(msg);
+
+  if (rs.code != 1) {
+    Serial.print("Error envio LoRa: ");
+    Serial.println(rs.getResponseDescription());
+  }
+#endif
+}
+
+// -------------------------------------------------------
 void setup() {
-  Serial.begin(115200); // Debug opcional
-  delay(1);
+  Serial.begin(115200);
   
+  // IMPORTANTE: Dar tiempo al USB nativo para que no se desconecte
+  delay(3000); 
+  Serial.println("\n--- INICIANDO SISTEMA ---");
+
+  // Iniciar Serial2 con los pines del LoRa
+  Serial2.begin(9600, SERIAL_8N1, LORA_RX_PIN, LORA_TX_PIN);
+  delay(100);
+
+  // Iniciar el bus SPI con los pines correctos
   SPI.begin(SCK, MISO, MOSI);
-  
+
   setupADC();
   setupRTD();
   
-  // Encendemos el módulo LoRa
+  Serial.println("Iniciando LoRa...");
   e220ttl.begin();
+
+  Serial.println("Transmisor listo y funcionando");
 }
 
+// -------------------------------------------------------
 void loop() {
   if (ADCdataReady) {
     ADCdataReady = false;
-    guardarFuerza();
 
-    #if mandarMedidasPorLoRa
-      contadorPruebas++;
-      if(contadorPruebas >= lecturasParaFuerza){
-        // Construimos el string y lo enviamos
-        String msgFuerza = "Fuerza(Kg):" + String(filtroFuerzas(arrayFuerzas), 4);
-        e220ttl.sendMessage(msgFuerza);
-        contadorPruebas = 0;
-      }
-    #endif 
+    //leerYAcumularFuerza();
 
     divisorRateTemp++;
-    if(divisorRateTemp >= lecturasParaTemp){
+    if (divisorRateTemp >= LECTURAS_PARA_TEMP) {
       divisorRateTemp = 0;
-      guardarTemperatura();
-      
-      #if mandarMedidasPorLoRa
-        String msgTemp = "Temperatura:" + String(filtroTemperatura(arrayTemp), 2);
-        e220ttl.sendMessage(msgTemp);
-      #endif
+      //actualizarTemperatura();
+    }
+    Serial.println("Contador Fuerzas: " + contadorFuerzas);
+    if (contadorFuerzas >= LECTURAS_PARA_ENVIO_FUERZA) {
+      float fuerzaMedia = sumaFuerzas / (float)contadorFuerzas;
+      Serial.println("Enviando mensaje");
+      enviarPaquete(fuerzaMedia, ultimaTemp);
+
+      sumaFuerzas = 0.0f;
+      contadorFuerzas = 0;
+      numeroPaquete++;
     }
   }
-
-  delayMicroseconds(100);
-}
-
-float filtroFuerzas(float arr[]){
-  float media = 0;
-  for (int i=0; i<tamanoArrayFuerzas; i++){
-    media += arr[i];
-  }
-  return media/tamanoArrayFuerzas;
-}
-
-float filtroTemperatura(float arr[]){
-  float media = 0;
-  for (int i=0; i<tamanoArrayTemp; i++){
-    media += arr[i];
-  }
-  return media/tamanoArrayTemp;
 }
