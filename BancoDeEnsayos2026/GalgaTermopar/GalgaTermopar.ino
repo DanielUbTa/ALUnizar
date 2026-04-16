@@ -2,251 +2,215 @@
 #include <SPI.h>
 #include <Protocentral_ADS1220.h>
 #include <7Semi_MAX31865.h>
-#include "LoRa_E220.h"
-
 
 int contadorPruebas = 0;
-
 int contadorPruebas2 = 0;
 
 #define sacarMedidasPorSerial true
 
-//Pines SPI comunes
-
+// ================= PINES SPI =================
 #define SCK 12
 #define MISO 13
 #define MOSI 11
-#define CS_Galga 10 //Es activo en bajo
+#define ADC_CS 10    // CS de la Galga
+#define RTD_CS_PIN 35 // CS de la PT100
+#define ADC_DRDY 1   // Data Ready del ADC
+// =============================================
 
-///////////////Globales para guardado de datos
-  #define tamanoArrayFuerzas 1000 //16384
-    //Equivalente a 16 segundos de guardado de datos
-    //Voy a poner menos tamaño para hacer un filtro
-  float arrayFuerzas[tamanoArrayFuerzas];
-  uint32_t arrayFuerzasPuntero = 0;
+/////////////// Globales para guardado de datos
+#define tamanoArrayFuerzas 1000 
+float arrayFuerzas[tamanoArrayFuerzas];
+uint32_t arrayFuerzasPuntero = 0;
 
-  #define divisionRateTemperatura 100
-  int divisorRateTemp = 0;
-    //Cuantas veces más lento va el guardado de temperatura comparado con el de fuerza
-  #define tamanoArrayTemp 256
-    //Equivalente a 25 segundos de guardado de datos
-  float arrayTemp[tamanoArrayTemp];
-  uint32_t arrayTempPuntero = 0;
+#define divisionRateTemperatura 100
+int divisorRateTemp = 0;
 
+#define tamanoArrayTemp 256
+float arrayTemp[tamanoArrayTemp];
+uint32_t arrayTempPuntero = 0;
 ///////////////
 
-///////////////Cosas del ADC
+/////////////// Cosas del ADC (Galga directa)
+#define PGA          128               // ¡Cambiado a 128 porque ya no hay amplificador externo!
+#define VREF         2.048             // Referencia interna de 2.048V
+#define VFSR         VREF/PGA
+#define FULL_SCALE   (((long int)1<<23)-1)
 
-  #define PGA          1                 // Programmable Gain = 1
-  #define VREF         2.048            // Internal reference of 2.048V
-  #define VFSR         VREF/PGA
-  #define FULL_SCALE   (((long int)1<<23)-1)
+const float mult = 300.0 / (FULL_SCALE); // Multiplicar por 9.81 para sacar los newtons
+const float suma = 0.0;
 
-  const float mult = 300/(FULL_SCALE);//300kg/(2^24-1 FS) Multiplicar por 9.81 para sacar los newtons
-  
-  const float suma = 0.0;
+float ultimaFuerza = 0.0;
 
-  float ultimaFuerza = 0.0;
-  
-  #define ADC_CS   10
-  #define ADC_DRDY 1
-  Protocentral_ADS1220 ads1220;
-  volatile bool ADCdataReady = false;
+Protocentral_ADS1220 ads1220;
+volatile bool ADCdataReady = false;
 
-
-  //El ADC generará una interrupción cuando tenga un dato listo
-  //Y en cada interrupción se llamará a esta función
-  void IRAM_ATTR drdyISR() {
-    ADCdataReady = true;
-  }
-
-
-  void setupADC(){
-
-    pinMode(ADC_DRDY, INPUT);
-
-    ads1220.begin(ADC_CS, ADC_DRDY);
-
-    ads1220.set_pga_gain(PGA_GAIN_1); //Se le podría subir la ganancia si con los potenciometros no es suficiente
-    ads1220.set_data_rate(DR_1000SPS);
-    ads1220.set_conv_mode_continuous();
-    ads1220.Start_Conv();
-
-    attachInterrupt(digitalPinToInterrupt(ADC_DRDY), drdyISR, FALLING);
-  }
-
-  void guardarFuerza(){
-    
-    ads1220.Read_Data();
-    //float fuerzaMedida = ((float)ads1220.DataToInt()) * mult + suma;
-    //ultimaFuerza += 1*(fuerzaMedida-ultimaFuerza); //"Filtro"
-    ultimaFuerza = ((float)ads1220.DataToInt()) * mult + suma; //Lo pongo así porque hay un filtro ya hecho en una rutina
-    arrayFuerzas[arrayFuerzasPuntero] = ultimaFuerza;
-    arrayFuerzasPuntero++;
-
-    if(arrayFuerzasPuntero >= tamanoArrayFuerzas){
-      arrayFuerzasPuntero = 0;
-    }
-  }
-
-///////////////
-
-///////////////Cosas del termopar
-  #define RTD_CS_PIN   35
-  #define RREF_OHM     430.0f
-  #define R0_OHM       100.0f  //Igual hay que cambiar
-
-  float ultimaTemp = 0.0;
-
-  MAX31865_7Semi rtd(RTD_CS_PIN, SPI);
-
-  void printFaultsAndClear() {
-    Serial.println(F("MAX31865: FAULT detected!"));
-    MAX31865_7Semi::FaultStatus f = rtd.readFaultStatus();
-    if (f.rtdHigh)       Serial.println(F("  - RTD en circuito abierto")); //RTD HIGH threshold
-    if (f.rtdLow)        Serial.println(F("  - RTD en cortocircuito")); //RTD LOW threshold
-    if (f.refInHigh)     Serial.println(F("  - REFIN- > 0.85*Vbias"));
-    if (f.refInLow)      Serial.println(F("  - REFIN- < 0.85*Vbias"));
-    if (f.rtdInLow)      Serial.println(F("  - RTDIN- < 0.85*Vbias"));
-    if (f.overUnderVolt) Serial.println(F("  - Over/Under Voltage"));
-    rtd.clearFaults();
-  }
-
-  void setupRTD() {
-    rtd.begin(WIRES_3,      //puede ser WIRES_2 o WIRES_3 en función de la sonda
-              FILTER_50HZ,  // o FILTER_60HZ
-              true,         // autoConvert
-              true,         // Vbias ON
-              1000000);     // SPI 1 MHz
-
-    rtd.setReferenceResistor(RREF_OHM);
-    rtd.setR0(R0_OHM);
-
-    rtd.setLowThreshold(20.0f);
-    rtd.setHighThreshold(300.0f);
-    rtd.clearFaults();
-  }
-
-  float leerTemperaturaC() {
-    if (rtd.readFault()) {
-      printFaultsAndClear();
-      return -273.15; //Ha habido un fallo
-    }
-    return rtd.readTemperatureC();
-  }
-
-  void guardarTemperatura(){
-    ultimaTemp = leerTemperaturaC();
-    arrayTemp[arrayTempPuntero] = ultimaTemp;
-    arrayTempPuntero++;
-    if(arrayTempPuntero >= tamanoArrayTemp){
-      arrayTempPuntero = 0;
-    }
-  }
-///////////////
-
-///////////////Cosas de la radio
-  LoRa_E220 e220ttl(&Serial2, 15, 21, 19);
-
-  //Igual esto está mejor?
-  //LoRa_E220 e220ttl(&Serial2, 22, 4, 18, 21, 19, UART_BPS_RATE_9600); //  esp32 RX <-- e220 TX, esp32 TX --> e220 RX AUX M0 M1
-
-  //Para mandar mensajes habrá que usar sendCharArray
-  //ResponseStatus rs = sendCharArray(payload, sizeof(payload));
-///////////////
-
-///////////////Máquina de estados
-  enum estado{
-    esperandoPruebaNueva,
-    esperandoAlMotor,
-    motorActivo,
-    mandandoDatos
-  };
-
-  //habrá que ver qué se hace en cada estado 
-///////////////
-
-
-//SCK = GPIO 12
-//MISO = GPIO 13
-//MOSI = GPIO 11
-//CS_Galga = GPIO 10
-//CS_RTD = GPIO 35
-
-void setup() {
-  
-  Serial.begin(115200);
-  delay(1);
-  //Serial.println("Serial encendido");
-  SPI.begin(SCK, MISO, MOSI);
-
-  //Serial.println("SPI encendido");
-
-  setupADC();
-  setupRTD();
-  //e220ttl.begin();
-  //Serial.println("Setup Completado");
-  contadorPruebas2 = millis();
+// Interrupción del ADC
+void IRAM_ATTR drdyISR() {
+  ADCdataReady = true;
 }
 
-void loop() {
+void setupADC() {
+  pinMode(ADC_DRDY, INPUT);
+  ads1220.begin(ADC_CS, ADC_DRDY);
 
-  if (ADCdataReady) {
-    ADCdataReady = false;
-    guardarFuerza();
+  // Ganancia a 128 para leer los milivoltios de la galga directamente
+  ads1220.set_pga_gain(PGA_GAIN_128); 
+  ads1220.set_data_rate(DR_1000SPS);
+  ads1220.set_conv_mode_continuous();
+  ads1220.Start_Conv();
 
-    
-    #if sacarMedidasPorSerial
-      contadorPruebas++;
-      //contadorPruebas2++;
-      if(contadorPruebas == 10){
-        Serial.print("Fuerza(Kg):");
-        Serial.println(filtroFuerzas(arrayFuerzas),4);
-        //Serial.println(ultimaFuerza,8);
-        //Serial.print("Variable_2:");
-        //Serial.println((float)contadorPruebas2/(float)millis(),8);
-        contadorPruebas = 0;
-      }
-    #endif 
-
-    //Serial.print("Variable_1:");
-    //Serial.println(filtroFuerzas(arrayFuerzas),4);
-    divisorRateTemp++;
-   
-    if(divisorRateTemp >= divisionRateTemperatura){
-      divisorRateTemp = 0;
-      //Serial.println("Temperatura medida");
-      guardarTemperatura();
-      
-      #if sacarMedidasPorSerial
-        Serial.print("Temperatura:");
-        Serial.println(filtroTemperatura(arrayTemp));
-      #endif
-    }
-
-  }
-
-  delayMicroseconds(100);//Delay de 100uS
-  //delayMicroseconds(1);
+  attachInterrupt(digitalPinToInterrupt(ADC_DRDY), drdyISR, FALLING);
 }
 
+void guardarFuerza() {
+  ads1220.Read_Data();
+  ultimaFuerza = ((float)ads1220.DataToInt()) * mult + suma; 
+  arrayFuerzas[arrayFuerzasPuntero] = ultimaFuerza;
+  arrayFuerzasPuntero++;
 
+  if(arrayFuerzasPuntero >= tamanoArrayFuerzas){
+    arrayFuerzasPuntero = 0;
+  }
+}
+///////////////
+
+/////////////// Cosas del termopar (PT100)
+#define RREF_OHM     430.0f
+#define R0_OHM       100.0f  
+
+float ultimaTemp = 0.0;
+
+MAX31865_7Semi rtd(RTD_CS_PIN, SPI);
+
+void printFaultsAndClear() {
+  Serial.println(F("MAX31865: FAULT detected!"));
+  MAX31865_7Semi::FaultStatus f = rtd.readFaultStatus();
+  if (f.rtdHigh)       Serial.println(F("  - RTD en circuito abierto")); 
+  if (f.rtdLow)        Serial.println(F("  - RTD en cortocircuito")); 
+  if (f.refInHigh)     Serial.println(F("  - REFIN- > 0.85*Vbias"));
+  if (f.refInLow)      Serial.println(F("  - REFIN- < 0.85*Vbias"));
+  if (f.rtdInLow)      Serial.println(F("  - RTDIN- < 0.85*Vbias"));
+  if (f.overUnderVolt) Serial.println(F("  - Over/Under Voltage"));
+  rtd.clearFaults();
+}
+
+void setupRTD() {
+  rtd.begin(WIRES_3,      
+            FILTER_50HZ,  
+            true,         
+            true,         
+            1000000);     
+
+  rtd.setReferenceResistor(RREF_OHM);
+  rtd.setR0(R0_OHM);
+
+  rtd.setLowThreshold(20.0f);
+  rtd.setHighThreshold(300.0f);
+  rtd.clearFaults();
+}
+
+float leerTemperaturaC() {
+  if (rtd.readFault()) {
+    printFaultsAndClear();
+    return -273.15; // Ha habido un fallo
+  }
+  return rtd.readTemperatureC();
+}
+
+void guardarTemperatura() {
+  ultimaTemp = leerTemperaturaC();
+  arrayTemp[arrayTempPuntero] = ultimaTemp;
+  arrayTempPuntero++;
+  if(arrayTempPuntero >= tamanoArrayTemp){
+    arrayTempPuntero = 0;
+  }
+}
+///////////////
+
+/////////////// Funciones de Filtro
 float filtroFuerzas(float arrayFuerzas[]){
   float fuerza_media = 0;
-  
-  for (int i=0; i<1000; i++){
+  for (int i=0; i<tamanoArrayFuerzas; i++){
     fuerza_media += arrayFuerzas[i];
   }
-  return fuerza_media/1000;
-  
+  return fuerza_media / tamanoArrayFuerzas;
 }
 
 float filtroTemperatura(float arrayTemp[]){
   float temp_media = 0;
-  
-  for (int i=0; i<256; i++){
+  for (int i=0; i<tamanoArrayTemp; i++){
     temp_media += arrayTemp[i];
   }
-  return temp_media/256;
-  
+  return temp_media / tamanoArrayTemp;
+}
+///////////////
+
+void setup() {
+  Serial.begin(115200);
+  delay(2000); // Tiempo para que abra el monitor serie
+  Serial.println("\n--- INICIANDO SENSORES ---");
+
+  // 1. SILENCIAR A LOS CHIPS (Evita conflictos SPI al arrancar)
+  pinMode(ADC_CS, OUTPUT);
+  digitalWrite(ADC_CS, HIGH);
+  pinMode(RTD_CS_PIN, OUTPUT);
+  digitalWrite(RTD_CS_PIN, HIGH);
+
+  // 2. INICIAR SPI
+  SPI.begin(SCK, MISO, MOSI);
+  delay(100);
+
+  // 3. CONFIGURAR GALGA
+  Serial.println("Iniciando ADC (Galga)...");
+  setupADC();
+
+  // 4. RE-FORZAR PINES SPI (Por si la librería del ADC los cambió)
+  SPI.begin(SCK, MISO, MOSI);
+
+  // 5. CONFIGURAR PT100
+  Serial.println("Iniciando RTD (PT100)...");
+  setupRTD();
+
+  // 6. RE-FORZAR PINES SPI (Por si la librería del RTD los cambió)
+  SPI.begin(SCK, MISO, MOSI);
+
+  // 7. DESATASCAR ADC (Si se quedó con un dato pendiente)
+  if (digitalRead(ADC_DRDY) == LOW) {
+    ads1220.Read_Data(); 
+  }
+
+  Serial.println("¡Setup Completado! Leyendo datos...");
+  contadorPruebas2 = millis();
+}
+
+void loop() {
+  // A PRUEBA DE BALAS: Interrupción O pin en LOW
+  if (ADCdataReady || digitalRead(ADC_DRDY) == LOW) {
+    ADCdataReady = false;
+    
+    guardarFuerza();
+
+    #if sacarMedidasPorSerial
+      contadorPruebas++;
+      if(contadorPruebas == 10){
+        Serial.print("Fuerza(Kg): ");
+        Serial.println(filtroFuerzas(arrayFuerzas), 4);
+        contadorPruebas = 0;
+      }
+    #endif 
+
+    divisorRateTemp++;
+   
+    if(divisorRateTemp >= divisionRateTemperatura){
+      divisorRateTemp = 0;
+      guardarTemperatura();
+      
+      #if sacarMedidasPorSerial
+        Serial.print("Temperatura: ");
+        Serial.println(filtroTemperatura(arrayTemp));
+      #endif
+    }
+  }
+
+  delayMicroseconds(100);
 }

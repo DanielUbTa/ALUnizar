@@ -30,6 +30,19 @@ void setup() {
   
   // Iniciar LoRa
   e220ttl.begin();
+  ResponseStructContainer c = e220ttl.getConfiguration();
+  if (c.status.code == 1) {
+    Configuration config = *(Configuration*) c.data;
+    if (config.CHAN != 18) {
+      Serial.println("Cambiando el canal al 18 para coincidir con el Emisor...");
+      config.CHAN = 18;
+      e220ttl.setConfiguration(config, WRITE_CFG_PWR_DWN_SAVE);
+      Serial.println("¡Canal actualizado!");
+    } else {
+      Serial.println("El canal ya es el 18. ¡Perfecto!");
+    }
+  }
+  e220ttl.setMode(MODE_0_NORMAL);
 
   Serial.println("Receptor listo y escuchando...");
 }

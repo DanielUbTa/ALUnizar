@@ -8,19 +8,20 @@
 
 // ===================== PINES DEFINITIVOS =====================
 // Pines SPI
-#define SCK   46
-#define MISO  11 // ¡Actualizado al 11!
+#define SCK   48
+#define MISO  11 
 #define MOSI  45
 
 // Pines LoRa
 #define LORA_RX_PIN 42 // Conectar al TX del LoRa
 #define LORA_TX_PIN 2  // Conectar al RX del LoRa
-#define LORA_AUX_PIN 34 
-// (El pin 37 del LoRa no hace falta declararlo aquí si es M0/M1, el módulo funciona igual)
+#define LORA_AUX_PIN 37
+#define M1_PIN 21
+#define M0_PIN 47
 
 // ADS1220 (Fuerza)
-#define ADC_CS    14 
-#define ADC_DRDY  4  // DRDY movido al 4 para evitar conflicto con el RTD
+#define ADC_CS    10
+#define ADC_DRDY  4
 
 // RTD MAX31865 (Temperatura)
 #define RTD_CS_PIN 35 
@@ -33,13 +34,15 @@
 #define LECTURAS_PARA_TEMP         1000  
 
 // Variables ADC fuerza 
-#define PGA        1
-#define VREF       2.048
-#define VFSR       VREF / PGA
-#define FULL_SCALE (((long int)1 << 23) - 1)
+#define PGA                 128
+#define PGA_GAIN_DEFINE     PGA_GAIN_128
+#define VREF                2.048
+#define VFSR                VREF / PGA
+#define FULL_SCALE          (((long int)1 << 23) - 1)
+const float SENSIBILIDAD = 0.001f;
 
-const float mult = 300.0f/FULL_SCALE;
-const float suma = 0.0f;
+const float mult = 150.0f/(FULL_SCALE * PGA * SENSIBILIDAD);
+const float suma = 187.5f;
 
 Protocentral_ADS1220 ads1220;
 volatile bool ADCdataReady = false;
@@ -53,7 +56,7 @@ MAX31865_7Semi rtd(RTD_CS_PIN, SPI);
 float ultimaTemp = NAN;
 
 // LoRa
-LoRa_E220 e220ttl(&Serial2, LORA_AUX_PIN);
+LoRa_E220 e220ttl(&Serial2, LORA_AUX_PIN, M0_PIN, M1_PIN);
 
 // Control
 uint32_t divisorRateTemp = 0;
@@ -68,7 +71,9 @@ void IRAM_ATTR drdyISR() {
 void setupADC() {
   pinMode(ADC_DRDY, INPUT);
   ads1220.begin(ADC_CS, ADC_DRDY);
-  ads1220.set_pga_gain(PGA_GAIN_1);
+  ads1220.set_pga_gain(PGA_GAIN_128);
+  ads1220.select_mux_channels(MUX_AIN1_AIN2);
+  ads1220.set_VREF(2);
   ads1220.set_data_rate(DR_1000SPS);
   ads1220.set_conv_mode_continuous();
   ads1220.Start_Conv();
@@ -117,7 +122,7 @@ float leerTemperaturaC() {
 // -------------------------------------------------------
 void leerYAcumularFuerza() {
   ads1220.Read_Data();
-  ultimaFuerza = ((float)ads1220.DataToInt()) * mult + suma;
+  ultimaFuerza = ((float)ads1220.DataToInt()) * mult - suma;
   sumaFuerzas += ultimaFuerza;
   contadorFuerzas++;
 }
@@ -132,14 +137,15 @@ void enviarPaquete(float fuerzaMedia, float temperatura) {
   char msg[96];
 
   if (isnan(temperatura)) {
-    snprintf(msg, sizeof(msg), "%lu,%.4f,NAN", (unsigned long)numeroPaquete, fuerzaMedia);
+    snprintf(msg, sizeof(msg), "%lu,%.4f,NAN\n", (unsigned long)numeroPaquete, fuerzaMedia);
   } else {
-    snprintf(msg, sizeof(msg), "%lu,%.4f,%.2f", (unsigned long)numeroPaquete, fuerzaMedia, temperatura);
+    snprintf(msg, sizeof(msg), "%lu,%.4f,%.2f\n", (unsigned long)numeroPaquete, fuerzaMedia, temperatura);
   }
 
 #if ENVIAR_POR_LORA
   ResponseStatus rs = e220ttl.sendMessage(msg);
-
+  Serial.print("Estado de Respuesta: ");
+  Serial.println(rs.code);
   Serial.print("TX -> ");
   Serial.println(msg);
 
@@ -150,7 +156,7 @@ void enviarPaquete(float fuerzaMedia, float temperatura) {
 #endif
 }
 
-// -------------------------------------------------------
+
 void setup() {
   Serial.begin(115200);
   
@@ -163,35 +169,54 @@ void setup() {
   delay(100);
 
   // Iniciar el bus SPI con los pines correctos
-  SPI.begin(SCK, MISO, MOSI);
-
-  setupADC();
-  setupRTD();
   
+  pinMode(ADC_CS, OUTPUT);
+  digitalWrite(ADC_CS, HIGH);
+  
+
+  SPI.begin(SCK, MISO, MOSI);
+  setupADC();
+  SPI.begin(SCK, MISO, MOSI);
+  setupRTD();
+  SPI.begin(SCK, MISO, MOSI);
   Serial.println("Iniciando LoRa...");
-  e220ttl.begin();
+  bool testLoRa = e220ttl.begin();
+  ResponseStructContainer c = e220ttl.getConfiguration();
+  if (c.status.code == 1) {
+    Configuration config = *(Configuration*) c.data;
+    if (config.CHAN != 18) {
+      Serial.println("Cambiando el canal al 18 para coincidir con el Emisor...");
+      config.CHAN = 18;
+      e220ttl.setConfiguration(config, WRITE_CFG_PWR_DWN_SAVE);
+      Serial.println("¡Canal actualizado!");
+    } else {
+      Serial.println("El canal ya es el 18. ¡Perfecto!");
+    }
+  }
+  e220ttl.setMode(MODE_0_NORMAL);
+  delay(5000);
+  if(testLoRa) Serial.println("LoRa iniciado correctamente");
 
   Serial.println("Transmisor listo y funcionando");
 }
 
-// -------------------------------------------------------
 void loop() {
   if (ADCdataReady) {
     ADCdataReady = false;
 
-    //leerYAcumularFuerza();
+    leerYAcumularFuerza();
 
     divisorRateTemp++;
     if (divisorRateTemp >= LECTURAS_PARA_TEMP) {
       divisorRateTemp = 0;
-      //actualizarTemperatura();
+      actualizarTemperatura();
     }
-    Serial.println("Contador Fuerzas: " + contadorFuerzas);
+    // Serial.print("Contador Fuerzas: ");
+    // Serial.println(contadorFuerzas);
     if (contadorFuerzas >= LECTURAS_PARA_ENVIO_FUERZA) {
       float fuerzaMedia = sumaFuerzas / (float)contadorFuerzas;
       Serial.println("Enviando mensaje");
       enviarPaquete(fuerzaMedia, ultimaTemp);
-
       sumaFuerzas = 0.0f;
       contadorFuerzas = 0;
       numeroPaquete++;
